@@ -40,7 +40,9 @@ func main() {
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 		//
 		// Create an empty response
-		response := []byte{}
+		respSize := len(receivedData)
+		response := make([]byte, respSize)
+		copy(response, []byte(receivedData))
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
