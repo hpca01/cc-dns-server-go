@@ -8,6 +8,33 @@ import (
 // Ensures gofmt doesn't remove the "net" import in stage 1 (feel free to remove this!)
 var _ = net.ListenUDP
 
+type RespHeader struct {
+	ID    uint16
+	Flags uint16
+}
+
+func NewRespHeader() RespHeader {
+	return RespHeader{}
+}
+
+func (r *RespHeader) ToBytes() []byte {
+	bytes := make([]byte, 12)
+	bytes[0] = byte(r.ID >> 8) //shift 8 bits to right, we only use the last 8 bits
+	bytes[1] = byte(r.ID)      //we only use the last 8 bits, so this is the second half of the 16 bits
+	bytes[2] = byte(r.Flags >> 8)
+	bytes[3] = byte(r.Flags)
+	return bytes
+}
+
+func (r *RespHeader) FromBytes(data []byte) error {
+	if len(data) < 12 {
+		return fmt.Errorf("header is too short")
+	}
+	r.ID = uint16(data[0])<<8 | uint16(data[1])    // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.Flags = uint16(data[2])<<8 | uint16(data[3]) // same logic as before
+	return nil
+}
+
 func main() {
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
@@ -40,12 +67,17 @@ func main() {
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 		//
 		// Create an empty response
-		response := make([]byte, 12) // usigned int 8 bits * 12 = 96 bits -> 16 bits = ID
-		copy(response, buf[:12])
-		response[2] = 0b1 << 7
-		fmt.Printf("%x %s", response, response)
+		header := NewRespHeader()
+		if err := header.FromBytes(buf[:size]); err != nil {
+			fmt.Println("Error parsing DNS ", err)
+			continue
+		}
 
-		_, err = udpConn.WriteToUDP(response, source)
+		resp := NewRespHeader()
+		resp.ID = header.ID
+		resp.Flags |= (1 << 15)
+
+		_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
