@@ -40,9 +40,10 @@ func main() {
 		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
 		//
 		// Create an empty response
-		respSize := len(receivedData)
-		response := make([]byte, respSize)
-		copy(response, []byte(receivedData))
+		response := make([]byte, 12) // usigned int 8 bits * 12 = 96 bits -> 16 bits = ID
+		copy(response, buf[:12])
+		response[2] = 0b1 << 7
+		fmt.Printf("%x %s", response, response)
 
 		_, err = udpConn.WriteToUDP(response, source)
 		if err != nil {
