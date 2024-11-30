@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
@@ -70,22 +71,31 @@ func NewRespHeader() DNSMessage {
 }
 
 func (r *DNSMessage) ToBytes() []byte {
-	bytes := make([]byte, 12+len(r.Rem))
-	bytes[0] = byte(r.ID >> 8) //shift 8 bits to right, we only use the last 8 bits
-	bytes[1] = byte(r.ID)      //we only use the last 8 bits, so this is the second half of the 16 bits
-	bytes[2] = byte(r.Flags >> 8)
-	bytes[3] = byte(r.Flags)
-	bytes[4] = byte(r.QCount >> 8)
-	bytes[5] = byte(r.QCount)
-	bytes[6] = byte(r.ACount >> 8)
-	bytes[7] = byte(r.ACount)
-	bytes[8] = byte(r.NSCount >> 8)
-	bytes[9] = byte(r.NSCount)
-	bytes[10] = byte(r.ARCount >> 8)
-	bytes[11] = byte(r.ARCount)
-	bytes = append(bytes[:12], r.Rem...)
-
+	bytes := []byte{}
+	bytes = append(bytes, byte(r.ID>>8))
+	bytes = append(bytes, byte(r.ID))
+	bytes = append(bytes, byte(r.Flags>>8))
+	bytes = append(bytes, byte(r.Flags))
+	bytes = append(bytes, 0b00000000)
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount))
+	bytes = binary.BigEndian.AppendUint16(bytes, r.ACount)
+	bytes = binary.BigEndian.AppendUint16(bytes, r.NSCount)
+	bytes = binary.BigEndian.AppendUint16(bytes, r.ARCount)
+	bytes = append(bytes, EncodeDomain(r.DomainName)...)
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
 	return bytes
+}
+
+func EncodeDomain(dName string) []byte {
+	encoding := []byte{}
+	for _, segment := range strings.Split(dName, ".") {
+		sizeOfSeg := len(segment)
+		encoding = append(encoding, byte(sizeOfSeg))
+		encoding = append(encoding, []byte(segment)...)
+	}
+	encoding = append(encoding, 0x00)
+	return encoding
 }
 
 func PrintBytesToHex(data []byte) {
