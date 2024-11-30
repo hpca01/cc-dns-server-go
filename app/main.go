@@ -15,7 +15,6 @@ type DNSMessage struct {
 	Flags      uint16
 	QCount     uint16 // question count
 	QDCount    int
-	ques       Question
 	ACount     uint16 // answer count
 	NSCount    uint16 // authority section
 	ARCount    uint16 // additional section
@@ -23,32 +22,31 @@ type DNSMessage struct {
 	Rem        []byte //remaining buffer
 
 }
-type Question struct {
-	QName  []byte
-	QType  uint16
-	QClass uint16
+
+type ResourceRecord struct {
+	Name   string
+	Type   uint16
+	Class  uint16
+	TTL    uint32
+	Length uint16
+	Data   uint32 // this is the IP address for IPV4 only
 }
 
-func (r *DNSMessage) ParseQuestion() {
+func (r *DNSMessage) ParseQuestion(data []byte) {
 	// use & to get what it is currently set as, and then >> to get the 1st bit
 	i := 0
 	labels := []string{}
-	for ; r.Rem[i] != 0; i++ {
-		count := int(r.Rem[i])
+	for ; data[i] != 0; i++ {
+		count := int(data[i])
 		label := ""
 		fmt.Printf("At idx: %d size of label: %d", i, count)
 		fmt.Println()
 		for j := i + 1; j <= i+count; j++ {
-			label += string(int(r.Rem[j]))
+			label += string(int(data[j]))
 		}
 		labels = append(labels, label)
 		i += count
 	}
-	ques := Question{}
-	ques.QName = r.Rem[0 : i+1]
-	ques.QType = uint16(r.Rem[i+1])<<8 | uint16(r.Rem[i+2])
-	ques.QClass = uint16(r.Rem[i+3])<<8 | uint16(r.Rem[i+3])
-	r.ques = ques
 	// r.ACount = uint16(data[6])<<8 | uint16(data[7])    // same logic as before
 	r.DomainName = strings.Join(labels, ".")
 	fmt.Printf("Labels: [%s]", r.DomainName)
@@ -65,8 +63,20 @@ func (r *DNSMessage) SetQueryResponse(response bool) {
 	}
 }
 
-func NewRespHeader() DNSMessage {
+func NewHeader() DNSMessage {
 	return DNSMessage{}
+}
+func (r *DNSMessage) AnswerFrom() DNSMessage {
+	resp := DNSMessage{}
+	resp.ID = r.ID
+	resp.SetQueryResponse(true)
+	resp.DomainName = r.DomainName
+	resp.QDCount = r.QDCount
+	resp.ACount = 1
+	resp.NSCount = 0
+	resp.ARCount = 0
+
+	return resp
 }
 
 func (r *DNSMessage) ToBytes() []byte {
@@ -74,18 +84,23 @@ func (r *DNSMessage) ToBytes() []byte {
 	bytes = binary.BigEndian.AppendUint16(bytes, r.ID)
 	fmt.Printf("bytes: %d", bytes)
 	fmt.Println()
-	bytes = append(bytes, 0b10000000)
-	bytes = append(bytes, 0b00000000)
-	// bytes = binary.BigEndian.AppendUint16(bytes, r.Flags)
-	// fmt.Printf("bytes: %d", bytes)
-	// fmt.Println()
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
-	bytes = binary.BigEndian.AppendUint16(bytes, 0x0000)
-	bytes = binary.BigEndian.AppendUint16(bytes, 0x0000)
-	bytes = binary.BigEndian.AppendUint16(bytes, 0x0000)
+	bytes = binary.BigEndian.AppendUint16(bytes, r.Flags)
+	// question section
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount))
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ACount))  // ANCOUNT
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.NSCount)) // NSCOUNT
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ARCount)) // ARCOUNT
 	bytes = append(bytes, EncodeDomain(r.DomainName)...)
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QTYPE
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QCLASS
+
+	//answer section
+	bytes = append(bytes, EncodeDomain(r.DomainName)...)
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))  // TYPE
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))  // CLASS
+	bytes = binary.BigEndian.AppendUint32(bytes, uint32(60)) // TTL
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(4))  // Length
+	bytes = append(bytes, 0x08, 0x08, 0x08, 0x08)            // 8 8 8 8
 	PrintBytesToHex(bytes)
 	return bytes
 }
@@ -104,7 +119,6 @@ func EncodeDomain(dName string) []byte {
 }
 
 func PrintBytesToHex(data []byte) {
-
 	for _, b := range data {
 		fmt.Printf(" %x ", b)
 	}
@@ -114,14 +128,18 @@ func (r *DNSMessage) FromBytes(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("header is too short")
 	}
-	r.ID = uint16(data[0])<<8 | uint16(data[1])     // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
-	r.Flags = uint16(data[2])<<8 | uint16(data[3])  // same logic as before
-	r.QCount = uint16(data[4])<<8 | uint16(data[5]) // same logic as before
+	r.ID = binary.BigEndian.Uint16(data[0:2])     // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.Flags = binary.BigEndian.Uint16(data[2:4])  // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.QCount = binary.BigEndian.Uint16(data[4:6]) // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
 	r.QDCount = int(r.QCount)
-	r.ACount = uint16(data[6])<<8 | uint16(data[7])    // same logic as before
-	r.NSCount = uint16(data[8])<<8 | uint16(data[9])   // same logic as before
-	r.ARCount = uint16(data[10])<<8 | uint16(data[11]) // same logic as before
-	r.Rem = data[12:]
+	fmt.Println("number of questions", r.QDCount)
+	r.ACount = binary.BigEndian.Uint16(data[6:8])
+	fmt.Println("number of ACount", r.ACount)
+	r.NSCount = binary.BigEndian.Uint16(data[8:10])
+	fmt.Println("number of NSCount", r.NSCount)
+	r.ARCount = binary.BigEndian.Uint16(data[10:12])
+	fmt.Println("number of ARCount", r.ARCount)
+	r.ParseQuestion(data[12:])
 	return nil
 }
 
@@ -157,18 +175,12 @@ func main() {
 		fmt.Printf("Received %d bytes from %s:[ %s ]\n", size, source, receivedData)
 		//
 		// Create an empty response
-		header := NewRespHeader()
+		header := NewHeader()
 		if err := header.FromBytes(buf[:size]); err != nil {
 			fmt.Println("Error parsing DNS ", err)
 			continue
 		}
-		header.ParseQuestion()
-
-		resp := NewRespHeader()
-		resp.ID = header.ID
-		resp.SetQueryResponse(true)
-		resp.DomainName = header.DomainName
-		resp.ques = header.ques
+		resp := header.AnswerFrom()
 
 		_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
 		if err != nil {
