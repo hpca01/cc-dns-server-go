@@ -47,13 +47,12 @@ func (r *DNSMessage) ParseQuestion() {
 	ques := Question{}
 	ques.QName = r.Rem[0 : i+1]
 	ques.QType = uint16(r.Rem[i+1])<<8 | uint16(r.Rem[i+2])
-	ques.QType = uint16(r.Rem[i+3])<<8 | uint16(r.Rem[i+3])
+	ques.QClass = uint16(r.Rem[i+3])<<8 | uint16(r.Rem[i+3])
 	r.ques = ques
 	// r.ACount = uint16(data[6])<<8 | uint16(data[7])    // same logic as before
 	r.DomainName = strings.Join(labels, ".")
-	fmt.Printf("Labels: %s", r.DomainName)
+	fmt.Printf("Labels: [%s]", r.DomainName)
 	fmt.Println()
-	PrintBytesToHex(r.Rem[i+1:])
 }
 
 func (r *DNSMessage) SetQueryResponse(response bool) {
@@ -72,25 +71,31 @@ func NewRespHeader() DNSMessage {
 
 func (r *DNSMessage) ToBytes() []byte {
 	bytes := []byte{}
-	bytes = append(bytes, byte(r.ID>>8))
-	bytes = append(bytes, byte(r.ID))
-	bytes = append(bytes, byte(r.Flags>>8))
-	bytes = append(bytes, byte(r.Flags))
+	bytes = binary.BigEndian.AppendUint16(bytes, r.ID)
+	fmt.Printf("bytes: %d", bytes)
+	fmt.Println()
+	bytes = append(bytes, 0b10000000)
 	bytes = append(bytes, 0b00000000)
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount))
-	bytes = binary.BigEndian.AppendUint16(bytes, r.ACount)
-	bytes = binary.BigEndian.AppendUint16(bytes, r.NSCount)
-	bytes = binary.BigEndian.AppendUint16(bytes, r.ARCount)
+	// bytes = binary.BigEndian.AppendUint16(bytes, r.Flags)
+	// fmt.Printf("bytes: %d", bytes)
+	// fmt.Println()
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
+	bytes = binary.BigEndian.AppendUint16(bytes, 0x0000)
+	bytes = binary.BigEndian.AppendUint16(bytes, 0x0000)
+	bytes = binary.BigEndian.AppendUint16(bytes, 0x0000)
 	bytes = append(bytes, EncodeDomain(r.DomainName)...)
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))
+	PrintBytesToHex(bytes)
 	return bytes
 }
 
 func EncodeDomain(dName string) []byte {
+	fmt.Printf("domain name [%s]\n", dName)
 	encoding := []byte{}
 	for _, segment := range strings.Split(dName, ".") {
 		sizeOfSeg := len(segment)
+		fmt.Printf("Segment [%s]\n", segment)
 		encoding = append(encoding, byte(sizeOfSeg))
 		encoding = append(encoding, []byte(segment)...)
 	}
@@ -117,9 +122,6 @@ func (r *DNSMessage) FromBytes(data []byte) error {
 	r.NSCount = uint16(data[8])<<8 | uint16(data[9])   // same logic as before
 	r.ARCount = uint16(data[10])<<8 | uint16(data[11]) // same logic as before
 	r.Rem = data[12:]
-	fmt.Println("Question bytes")
-	PrintBytesToHex(r.Rem)
-	fmt.Println()
 	return nil
 }
 
@@ -165,6 +167,8 @@ func main() {
 		resp := NewRespHeader()
 		resp.ID = header.ID
 		resp.SetQueryResponse(true)
+		resp.DomainName = header.DomainName
+		resp.ques = header.ques
 
 		_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
 		if err != nil {
