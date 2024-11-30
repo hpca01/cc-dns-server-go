@@ -3,35 +3,113 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
 )
 
 // Ensures gofmt doesn't remove the "net" import in stage 1 (feel free to remove this!)
 var _ = net.ListenUDP
 
-type RespHeader struct {
-	ID    uint16
-	Flags uint16
+type DNSMessage struct {
+	ID         uint16
+	Flags      uint16
+	QCount     uint16 // question count
+	QDCount    int
+	ques       Question
+	ACount     uint16 // answer count
+	NSCount    uint16 // authority section
+	ARCount    uint16 // additional section
+	DomainName string // domain in question
+	Rem        []byte //remaining buffer
+
+}
+type Question struct {
+	QName  []byte
+	QType  uint16
+	QClass uint16
 }
 
-func NewRespHeader() RespHeader {
-	return RespHeader{}
+func (r *DNSMessage) ParseQuestion() {
+	// use & to get what it is currently set as, and then >> to get the 1st bit
+	i := 0
+	labels := []string{}
+	for ; r.Rem[i] != 0; i++ {
+		count := int(r.Rem[i])
+		label := ""
+		fmt.Printf("At idx: %d size of label: %d", i, count)
+		fmt.Println()
+		for j := i + 1; j <= i+count; j++ {
+			label += string(int(r.Rem[j]))
+		}
+		labels = append(labels, label)
+		i += count
+	}
+	ques := Question{}
+	ques.QName = r.Rem[0 : i+1]
+	ques.QType = uint16(r.Rem[i+1])<<8 | uint16(r.Rem[i+2])
+	ques.QType = uint16(r.Rem[i+3])<<8 | uint16(r.Rem[i+3])
+	r.ques = ques
+	// r.ACount = uint16(data[6])<<8 | uint16(data[7])    // same logic as before
+	r.DomainName = strings.Join(labels, ".")
+	fmt.Printf("Labels: %s", r.DomainName)
+	fmt.Println()
+	PrintBytesToHex(r.Rem[i+1:])
 }
 
-func (r *RespHeader) ToBytes() []byte {
-	bytes := make([]byte, 12)
+func (r *DNSMessage) SetQueryResponse(response bool) {
+	if response {
+		//SET the 16thbit
+		r.Flags |= 1 << 15
+	} else {
+		//UNSET the 16th bit
+		r.Flags &^= 1 << 15
+	}
+}
+
+func NewRespHeader() DNSMessage {
+	return DNSMessage{}
+}
+
+func (r *DNSMessage) ToBytes() []byte {
+	bytes := make([]byte, 12+len(r.Rem))
 	bytes[0] = byte(r.ID >> 8) //shift 8 bits to right, we only use the last 8 bits
 	bytes[1] = byte(r.ID)      //we only use the last 8 bits, so this is the second half of the 16 bits
 	bytes[2] = byte(r.Flags >> 8)
 	bytes[3] = byte(r.Flags)
+	bytes[4] = byte(r.QCount >> 8)
+	bytes[5] = byte(r.QCount)
+	bytes[6] = byte(r.ACount >> 8)
+	bytes[7] = byte(r.ACount)
+	bytes[8] = byte(r.NSCount >> 8)
+	bytes[9] = byte(r.NSCount)
+	bytes[10] = byte(r.ARCount >> 8)
+	bytes[11] = byte(r.ARCount)
+	bytes = append(bytes[:12], r.Rem...)
+
 	return bytes
 }
 
-func (r *RespHeader) FromBytes(data []byte) error {
+func PrintBytesToHex(data []byte) {
+
+	for _, b := range data {
+		fmt.Printf(" %x ", b)
+	}
+}
+
+func (r *DNSMessage) FromBytes(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("header is too short")
 	}
-	r.ID = uint16(data[0])<<8 | uint16(data[1])    // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
-	r.Flags = uint16(data[2])<<8 | uint16(data[3]) // same logic as before
+	r.ID = uint16(data[0])<<8 | uint16(data[1])     // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.Flags = uint16(data[2])<<8 | uint16(data[3])  // same logic as before
+	r.QCount = uint16(data[4])<<8 | uint16(data[5]) // same logic as before
+	r.QDCount = int(r.QCount)
+	r.ACount = uint16(data[6])<<8 | uint16(data[7])    // same logic as before
+	r.NSCount = uint16(data[8])<<8 | uint16(data[9])   // same logic as before
+	r.ARCount = uint16(data[10])<<8 | uint16(data[11]) // same logic as before
+	r.Rem = data[12:]
+	fmt.Println("Question bytes")
+	PrintBytesToHex(r.Rem)
+	fmt.Println()
 	return nil
 }
 
@@ -64,7 +142,7 @@ func main() {
 		}
 		//
 		receivedData := string(buf[:size])
-		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
+		fmt.Printf("Received %d bytes from %s:[ %s ]\n", size, source, receivedData)
 		//
 		// Create an empty response
 		header := NewRespHeader()
@@ -72,10 +150,11 @@ func main() {
 			fmt.Println("Error parsing DNS ", err)
 			continue
 		}
+		header.ParseQuestion()
 
 		resp := NewRespHeader()
 		resp.ID = header.ID
-		resp.Flags |= (1 << 15)
+		resp.SetQueryResponse(true)
 
 		_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
 		if err != nil {
