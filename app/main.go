@@ -10,9 +10,9 @@ import (
 // Ensures gofmt doesn't remove the "net" import in stage 1 (feel free to remove this!)
 var _ = net.ListenUDP
 
-type DNSMessage struct {
+type DNSmessage struct {
 	ID         uint16
-	Flags      uint16
+	Flags      HeaderFlags
 	QCount     uint16 // question count
 	QDCount    int
 	ACount     uint16 // answer count
@@ -23,24 +23,66 @@ type DNSMessage struct {
 
 }
 
-type ResourceRecord struct {
-	Name   string
-	Type   uint16
-	Class  uint16
-	TTL    uint32
-	Length uint16
-	Data   uint32 // this is the IP address for IPV4 only
+type RawHeader []byte
+type RawHeaderFlags []byte
+
+/*
+*
+  - Parse the DNS header
+  - QR: Query/ Response Indicator (1 bit)
+  - Opcode: Operation Code (4 bits)
+  - AA: Authoritative Answer (1 bit)
+  - TC: Truncation Flag (1 bit)
+  - RD: Recursion Desired (1 bit)
+  - RA: Recursion Available (1 bit)
+  - Z: Reserved for future use (3 bits) Used by DNSSEC queries. At inception, it was reserved for future use.
+  - RCODE: Response Code (4 bits)
+*/
+
+type HeaderFlags struct {
+	QR     uint16
+	OPCODE uint16
+	AA     uint16
+	TC     uint16
+	RD     uint16
+	RA     uint16
+	Z      uint16
+	RCODE  uint16
 }
 
-func (r *DNSMessage) ParseQuestion(data []byte) {
+func (rawH RawHeaderFlags) parse() HeaderFlags {
+	flags := binary.BigEndian.Uint16(rawH)
+	opcode := (flags >> 11) & 0xF
+	rcode := flags & 0xF
+	if opcode != 0 {
+		rcode = 4
+	}
+	header := HeaderFlags{
+		QR:     (0b0000000000000001),
+		OPCODE: opcode,
+		AA:     (flags >> 10) & 0x1,
+		TC:     (flags >> 9) & 0x1,
+		RD:     (flags >> 8) & 0x1,
+		RA:     (flags >> 7) & 0x1,
+		Z:      (flags >> 4) & 0x07,
+		RCODE:  rcode,
+	}
+	return header
+}
+
+func (h HeaderFlags) toUint16() uint16 {
+	flags := h.QR<<15 | h.OPCODE<<11 | h.AA<<10 | h.TC<<9 | h.RD<<8 |
+		h.RA<<7 | h.Z<<4 | h.RCODE
+	return flags
+}
+
+func (r *DNSmessage) ParseQuestion(data []byte) {
 	// use & to get what it is currently set as, and then >> to get the 1st bit
 	i := 0
 	labels := []string{}
 	for ; data[i] != 0; i++ {
 		count := int(data[i])
 		label := ""
-		fmt.Printf("At idx: %d size of label: %d", i, count)
-		fmt.Println()
 		for j := i + 1; j <= i+count; j++ {
 			label += string(int(data[j]))
 		}
@@ -49,42 +91,28 @@ func (r *DNSMessage) ParseQuestion(data []byte) {
 	}
 	// r.ACount = uint16(data[6])<<8 | uint16(data[7])    // same logic as before
 	r.DomainName = strings.Join(labels, ".")
-	fmt.Printf("Labels: [%s]", r.DomainName)
-	fmt.Println()
 }
 
-func (r *DNSMessage) SetQueryResponse(response bool) {
-	if response {
-		//SET the 16thbit
-		r.Flags |= 1 << 15
-	} else {
-		//UNSET the 16th bit
-		r.Flags &^= 1 << 15
-	}
+func NewHeader() DNSmessage {
+	return DNSmessage{}
 }
-
-func NewHeader() DNSMessage {
-	return DNSMessage{}
-}
-func (r *DNSMessage) AnswerFrom() DNSMessage {
-	resp := DNSMessage{}
+func (r *DNSmessage) AnswerFrom() DNSmessage {
+	resp := DNSmessage{}
 	resp.ID = r.ID
-	resp.SetQueryResponse(true)
 	resp.DomainName = r.DomainName
 	resp.QDCount = r.QDCount
+	resp.Flags = r.Flags
 	resp.ACount = 1
 	resp.NSCount = 0
 	resp.ARCount = 0
-
+	resp.Rem = r.Rem
 	return resp
 }
 
-func (r *DNSMessage) ToBytes() []byte {
+func (r *DNSmessage) ToBytes() []byte {
 	bytes := []byte{}
 	bytes = binary.BigEndian.AppendUint16(bytes, r.ID)
-	fmt.Printf("bytes: %d", bytes)
-	fmt.Println()
-	bytes = binary.BigEndian.AppendUint16(bytes, r.Flags)
+	bytes = binary.BigEndian.AppendUint16(bytes, r.Flags.toUint16())
 	// question section
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount))
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ACount))  // ANCOUNT
@@ -101,16 +129,13 @@ func (r *DNSMessage) ToBytes() []byte {
 	bytes = binary.BigEndian.AppendUint32(bytes, uint32(60)) // TTL
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(4))  // Length
 	bytes = append(bytes, 0x08, 0x08, 0x08, 0x08)            // 8 8 8 8
-	PrintBytesToHex(bytes)
 	return bytes
 }
 
 func EncodeDomain(dName string) []byte {
-	fmt.Printf("domain name [%s]\n", dName)
 	encoding := []byte{}
 	for _, segment := range strings.Split(dName, ".") {
 		sizeOfSeg := len(segment)
-		fmt.Printf("Segment [%s]\n", segment)
 		encoding = append(encoding, byte(sizeOfSeg))
 		encoding = append(encoding, []byte(segment)...)
 	}
@@ -124,22 +149,21 @@ func PrintBytesToHex(data []byte) {
 	}
 }
 
-func (r *DNSMessage) FromBytes(data []byte) error {
+func (r *DNSmessage) FromBytes(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("header is too short")
 	}
-	r.ID = binary.BigEndian.Uint16(data[0:2])     // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
-	r.Flags = binary.BigEndian.Uint16(data[2:4])  // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.ID = binary.BigEndian.Uint16(data[0:2])   // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.Flags = RawHeaderFlags(data[2:4]).parse() // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits..
+	fmt.Printf("flag bytes %08b %08b\n", data[2], data[3])
+	fmt.Printf("flag bytes after reading %08b \n", r.Flags)
 	r.QCount = binary.BigEndian.Uint16(data[4:6]) // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
 	r.QDCount = int(r.QCount)
-	fmt.Println("number of questions", r.QDCount)
 	r.ACount = binary.BigEndian.Uint16(data[6:8])
-	fmt.Println("number of ACount", r.ACount)
 	r.NSCount = binary.BigEndian.Uint16(data[8:10])
-	fmt.Println("number of NSCount", r.NSCount)
 	r.ARCount = binary.BigEndian.Uint16(data[10:12])
-	fmt.Println("number of ARCount", r.ARCount)
 	r.ParseQuestion(data[12:])
+	r.Rem = data[:]
 	return nil
 }
 
