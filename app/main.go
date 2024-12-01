@@ -19,8 +19,6 @@ type DNSmessage struct {
 	NSCount    uint16 // authority section
 	ARCount    uint16 // additional section
 	DomainName string // domain in question
-	Rem        []byte //remaining buffer
-
 }
 
 type RawHeader []byte
@@ -77,7 +75,6 @@ func (h HeaderFlags) toUint16() uint16 {
 }
 
 func (r *DNSmessage) ParseQuestion(data []byte) {
-	// use & to get what it is currently set as, and then >> to get the 1st bit
 	i := 0
 	labels := []string{}
 	for ; data[i] != 0; i++ {
@@ -89,7 +86,6 @@ func (r *DNSmessage) ParseQuestion(data []byte) {
 		labels = append(labels, label)
 		i += count
 	}
-	// r.ACount = uint16(data[6])<<8 | uint16(data[7])    // same logic as before
 	r.DomainName = strings.Join(labels, ".")
 }
 
@@ -105,7 +101,6 @@ func (r *DNSmessage) AnswerFrom() DNSmessage {
 	resp.ACount = 1
 	resp.NSCount = 0
 	resp.ARCount = 0
-	resp.Rem = r.Rem
 	return resp
 }
 
@@ -163,7 +158,6 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 	r.NSCount = binary.BigEndian.Uint16(data[8:10])
 	r.ARCount = binary.BigEndian.Uint16(data[10:12])
 	r.ParseQuestion(data[12:])
-	r.Rem = data[:]
 	return nil
 }
 
