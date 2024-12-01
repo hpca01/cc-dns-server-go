@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -11,14 +12,20 @@ import (
 var _ = net.ListenUDP
 
 type DNSmessage struct {
-	ID         uint16
-	Flags      HeaderFlags
-	QCount     uint16 // question count
-	QDCount    int
-	ACount     uint16 // answer count
-	NSCount    uint16 // authority section
-	ARCount    uint16 // additional section
-	DomainName string // domain in question
+	ID        uint16
+	Flags     HeaderFlags
+	QCount    uint16 // question count
+	QDCount   int
+	ACount    uint16 // answer count
+	NSCount   uint16 // authority section
+	ARCount   uint16 // additional section
+	Questions []Question
+}
+
+type Question struct {
+	QName  string
+	QType  uint16
+	QClass uint16
 }
 
 type RawHeader []byte
@@ -50,8 +57,8 @@ type HeaderFlags struct {
 
 func (rawH RawHeaderFlags) parse() HeaderFlags {
 	flags := binary.BigEndian.Uint16(rawH)
-	opcode := (flags >> 11) & 0xF
-	rcode := flags & 0xF
+	opcode := (flags >> 11) & 0b00001111
+	rcode := flags & 0b00001111
 	if opcode != 0 {
 		rcode = 4
 	}
@@ -74,33 +81,60 @@ func (h HeaderFlags) toUint16() uint16 {
 	return flags
 }
 
-func (r *DNSmessage) ParseQuestion(data []byte) {
-	i := 0
+func parseLabel(data []byte, allData []byte) string {
+	idx := 0
 	labels := []string{}
-	for ; data[i] != 0; i++ {
-		count := int(data[i])
-		label := ""
-		for j := i + 1; j <= i+count; j++ {
-			label += string(int(data[j]))
+	for {
+		if data[idx] == 0 {
+			break
 		}
-		labels = append(labels, label)
-		i += count
+		// when a pointer is there it is padded with two bits 11 - 11000000
+		if (data[idx]&0b11000000)>>6 == 0b11 {
+			// pointer is everything after the two bits 11
+			ptr := binary.BigEndian.Uint16(data[idx : idx+2])
+			ptr <<= ptr              // move left 2 to get rid of the 11 padding
+			ptr >>= ptr              // move right 2 to return back to the original value
+			ptrConverted := int(ptr) // convert back to int
+			length := bytes.Index(allData[ptrConverted:], []byte{0})
+			labels = append(labels, parseLabel(allData[ptrConverted:ptrConverted+length+1], allData))
+			idx += 2
+			continue
+		}
+		len := int(data[idx])
+		subStr := data[idx+1 : idx+1+len]
+		labels = append(labels, string(subStr))
+		idx += len + 1
 	}
-	r.DomainName = strings.Join(labels, ".")
+	return strings.Join(labels, ".")
+}
+
+func (r *DNSmessage) ParseQuestion(data []byte, qcount int, offset int) {
+	var i = offset
+	fmt.Printf("Question Bytes %+v\n", data)
+	labels := []string{}
+	for ; qcount > 0; qcount-- {
+		nextNullSegment := bytes.Index(data[i:], []byte{0})
+		labels = append(labels, parseLabel(data[i:i+nextNullSegment+1], data))
+		i += 4
+	}
+	for _, label := range labels {
+		r.Questions = append(r.Questions, Question{label, uint16(1), uint16(1)})
+	}
 }
 
 func NewHeader() DNSmessage {
 	return DNSmessage{}
 }
+
 func (r *DNSmessage) AnswerFrom() DNSmessage {
 	resp := DNSmessage{}
 	resp.ID = r.ID
-	resp.DomainName = r.DomainName
-	resp.QDCount = r.QDCount
 	resp.Flags = r.Flags
-	resp.ACount = 1
-	resp.NSCount = 0
-	resp.ARCount = 0
+	resp.QDCount = r.QDCount
+	resp.ACount = r.ACount
+	resp.NSCount = r.NSCount
+	resp.ARCount = r.ARCount
+	resp.Questions = r.Questions
 	return resp
 }
 
@@ -110,20 +144,28 @@ func (r *DNSmessage) ToBytes() []byte {
 	bytes = binary.BigEndian.AppendUint16(bytes, r.Flags.toUint16())
 	// question section
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount))
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ACount))  // ANCOUNT
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount)) // ANCOUNT == same as QDCOUNT
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.NSCount)) // NSCOUNT
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ARCount)) // ARCOUNT
-	bytes = append(bytes, EncodeDomain(r.DomainName)...)
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QTYPE
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QCLASS
+	fmt.Printf("%+v\n", r.Questions)
+	for _, question := range r.Questions {
+		fmt.Printf("Question: %+v\n", question)
+		bytes = append(bytes, EncodeDomain(question.QName)...)
+		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QTYPE
+		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QCLASS
+	}
 
-	//answer section
-	bytes = append(bytes, EncodeDomain(r.DomainName)...)
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))  // TYPE
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(1))  // CLASS
-	bytes = binary.BigEndian.AppendUint32(bytes, uint32(60)) // TTL
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(4))  // Length
-	bytes = append(bytes, 0x08, 0x08, 0x08, 0x08)            // 8 8 8 8
+	for _, question := range r.Questions {
+		//answer section
+		bytes = append(bytes, EncodeDomain(question.QName)...)
+		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // TYPE
+		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // CLASS
+		bytes = binary.BigEndian.AppendUint32(bytes, uint32(0)) // TTL
+		bytes = binary.BigEndian.AppendUint16(bytes, uint16(4)) // Length
+		bytes = append(bytes, 0x08, 0x08, 0x08, 0x08)           // 8 8 8 8
+	}
+
+	fmt.Printf("Output bytes: %+v\n", bytes)
 	return bytes
 }
 
@@ -138,9 +180,9 @@ func EncodeDomain(dName string) []byte {
 	return encoding
 }
 
-func PrintBytesToHex(data []byte) {
+func PrintBytesToInt(data []byte) {
 	for _, b := range data {
-		fmt.Printf(" %x ", b)
+		fmt.Printf(" %d ", b)
 	}
 }
 
@@ -148,16 +190,15 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("header is too short")
 	}
-	r.ID = binary.BigEndian.Uint16(data[0:2])   // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
-	r.Flags = RawHeaderFlags(data[2:4]).parse() // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits..
-	fmt.Printf("flag bytes %08b %08b\n", data[2], data[3])
-	fmt.Printf("flag bytes after reading %08b \n", r.Flags)
+	r.ID = binary.BigEndian.Uint16(data[0:2])     // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.Flags = RawHeaderFlags(data[2:4]).parse()   // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits..
 	r.QCount = binary.BigEndian.Uint16(data[4:6]) // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
 	r.QDCount = int(r.QCount)
+	fmt.Printf("QD count received %d \n", r.QDCount)
 	r.ACount = binary.BigEndian.Uint16(data[6:8])
 	r.NSCount = binary.BigEndian.Uint16(data[8:10])
 	r.ARCount = binary.BigEndian.Uint16(data[10:12])
-	r.ParseQuestion(data[12:])
+	r.ParseQuestion(data, r.QDCount, 12)
 	return nil
 }
 
