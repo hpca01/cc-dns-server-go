@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 )
 
@@ -143,10 +144,10 @@ func (r *DNSmessage) ToBytes() []byte {
 	bytes = binary.BigEndian.AppendUint16(bytes, r.ID)
 	bytes = binary.BigEndian.AppendUint16(bytes, r.Flags.toUint16())
 	// question section
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount))
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.QDCount)) // ANCOUNT == same as QDCOUNT
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.NSCount)) // NSCOUNT
-	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ARCount)) // ARCOUNT
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(len(r.Questions)))
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(len(r.Questions))) // ANCOUNT == same as QDCOUNT
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.NSCount))        // NSCOUNT
+	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ARCount))        // ARCOUNT
 	fmt.Printf("%+v\n", r.Questions)
 	for _, question := range r.Questions {
 		fmt.Printf("Question: %+v\n", question)
@@ -203,6 +204,14 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 }
 
 func main() {
+	resolver := false
+	var ip string
+	if len(os.Args) > 2 {
+		resolver = true
+		ip = os.Args[2]
+	}
+	_ = ip
+	_ = resolver
 	// You can use print statements as follows for debugging, they'll be visible when running tests.
 	fmt.Println("Logs from your program will appear here!")
 
@@ -240,10 +249,30 @@ func main() {
 			continue
 		}
 		resp := header.AnswerFrom()
+		if resolver {
+			// If resolver, we need to forward
+			remoteUdpAddr, _ := net.ResolveUDPAddr("udp", ip)
+			remoteUdpConn, _ := net.DialUDP("udp", nil, remoteUdpAddr)
+			if len(header.Questions) > 1 {
+				// if more than 1 question, we need to split up
+				fmt.Println("There are more than 1 questions!")
+			}
+			response := header.AnswerFrom()
+			remoteUdpConn.WriteToUDP(response.ToBytes(), remoteUdpAddr)
+			buf := make([]byte, 512)
+			size, _, _ := remoteUdpConn.ReadFromUDP(buf)
+			//re-write the same packet but to the other connection
+			_, err = udpConn.WriteToUDP(buf[:size], source)
+			if err != nil {
+				fmt.Println("Failed to send response:", err)
+			}
+		} else {
+			_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
+			if err != nil {
+				fmt.Println("Failed to send response:", err)
+			}
 
-		_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
-		if err != nil {
-			fmt.Println("Failed to send response:", err)
 		}
+
 	}
 }
