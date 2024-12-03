@@ -21,12 +21,22 @@ type DNSmessage struct {
 	NSCount   uint16 // authority section
 	ARCount   uint16 // additional section
 	Questions []Question
+	Answers   []Answer
 }
 
 type Question struct {
 	QName  string
 	QType  uint16
 	QClass uint16
+}
+
+type Answer struct {
+	QName    string
+	Type     uint16 // 2 bytes
+	Class    uint16 // 2 bytes
+	TTL      uint32 // 4 bytes
+	RdLength uint16 // 2 bytes
+	Rdata    []byte // usually the IP or whatever else
 }
 
 type RawHeader []byte
@@ -93,8 +103,8 @@ func parseLabel(data []byte, allData []byte) string {
 		if (data[idx]&0b11000000)>>6 == 0b11 {
 			// pointer is everything after the two bits 11
 			ptr := binary.BigEndian.Uint16(data[idx : idx+2])
-			ptr <<= ptr              // move left 2 to get rid of the 11 padding
-			ptr >>= ptr              // move right 2 to return back to the original value
+			ptr <<= 2                // move left 2 to get rid of the 11 padding
+			ptr >>= 2                // move right 2 to return back to the original value
 			ptrConverted := int(ptr) // convert back to int
 			length := bytes.Index(allData[ptrConverted:], []byte{0})
 			labels = append(labels, parseLabel(allData[ptrConverted:ptrConverted+length+1], allData))
@@ -102,25 +112,35 @@ func parseLabel(data []byte, allData []byte) string {
 			continue
 		}
 		len := int(data[idx])
+		fmt.Println("[parseLabel] - len=", len)
 		subStr := data[idx+1 : idx+1+len]
+		fmt.Println("[parseLabel] - subStr=", subStr)
 		labels = append(labels, string(subStr))
+		fmt.Println("[parseLabel] - labels=", labels)
 		idx += len + 1
 	}
 	return strings.Join(labels, ".")
 }
 
-func (r *DNSmessage) ParseQuestion(data []byte, qcount int, offset int) {
+func (r *DNSmessage) ParseQuestion(data []byte, qcount int, offset int) int {
 	var i = offset
-	fmt.Printf("Question Bytes %+v\n", data)
+	fmt.Printf("[ParseQuestion] - Incoming Data Bytes %+v\n", data)
 	labels := []string{}
-	for ; qcount > 0; qcount-- {
-		nextNullSegment := bytes.Index(data[i:], []byte{0})
+	var nextNullSegment int
+	for j := 0; j < qcount; j++ {
+		nextNullSegment = bytes.Index(data[i:], []byte{0})
 		labels = append(labels, parseLabel(data[i:i+nextNullSegment+1], data))
+		fmt.Printf("[ParseQuestion] nextNullSegment=%d labels=%s i=%d qcount=%d\n",
+			nextNullSegment, labels, i, j)
+		fmt.Printf("[ParseQuestion] currentElement=%d nextElement=%d\n", data[i], data[i+1])
+		fmt.Printf("[ParseQuestion] nextNullSegElement+1=%d \n", data[i+nextNullSegment+1])
+		i += nextNullSegment + 1
 		i += 4
 	}
 	for _, label := range labels {
 		r.Questions = append(r.Questions, Question{label, uint16(1), uint16(1)})
 	}
+	return i
 }
 
 func NewHeader() DNSmessage {
@@ -156,14 +176,15 @@ func (r *DNSmessage) ToBytes() []byte {
 		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QCLASS
 	}
 
-	for _, question := range r.Questions {
+	for _, answer := range r.Answers {
 		//answer section
-		bytes = append(bytes, EncodeDomain(question.QName)...)
-		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // TYPE
-		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // CLASS
-		bytes = binary.BigEndian.AppendUint32(bytes, uint32(0)) // TTL
-		bytes = binary.BigEndian.AppendUint16(bytes, uint16(4)) // Length
-		bytes = append(bytes, 0x08, 0x08, 0x08, 0x08)           // 8 8 8 8
+		fmt.Printf("Answer for: %+v\n", answer.QName)
+		bytes = append(bytes, EncodeDomain(answer.QName)...)
+		bytes = binary.BigEndian.AppendUint16(bytes, answer.Type)     // TYPE
+		bytes = binary.BigEndian.AppendUint16(bytes, answer.Class)    // CLASS
+		bytes = binary.BigEndian.AppendUint32(bytes, answer.TTL)      // TTL
+		bytes = binary.BigEndian.AppendUint16(bytes, answer.RdLength) // Length
+		bytes = append(bytes, answer.Rdata...)                        // 8 8 8 8
 	}
 
 	fmt.Printf("Output bytes: %+v\n", bytes)
@@ -187,6 +208,44 @@ func PrintBytesToInt(data []byte) {
 	}
 }
 
+func (r *DNSmessage) WithAnswer(data []byte) error {
+	if len(data) < 12 {
+		return fmt.Errorf("header is too short")
+	}
+	r.ID = binary.BigEndian.Uint16(data[0:2])     // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.Flags = RawHeaderFlags(data[2:4]).parse()   // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits..
+	r.QCount = binary.BigEndian.Uint16(data[4:6]) // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
+	r.QDCount = int(r.QCount)
+	fmt.Printf("QD count received %d \n", r.QDCount)
+	r.ACount = binary.BigEndian.Uint16(data[6:8])
+	r.NSCount = binary.BigEndian.Uint16(data[8:10])
+	r.ARCount = binary.BigEndian.Uint16(data[10:12])
+	answers := r.ParseQuestion(data, r.QDCount, 12)
+	fmt.Printf("Questions %+v \n", r.Questions)
+	fmt.Printf("Answers starting from %d %+v\n", answers, data[answers:])
+	r.Answers = append(r.Answers, parseAnswer(data, answers+1))
+	fmt.Printf("Parsed answer: %+v\n", r.Answers)
+	return nil
+}
+
+func parseAnswer(data []byte, start int) Answer {
+	//assume only 1 answer
+	offset := start
+	labels := []string{}
+	nextNullSegment := bytes.Index(data[offset:], []byte{0})
+	labels = append(labels, parseLabel(data[offset:offset+nextNullSegment+1], data))
+	idx := offset + nextNullSegment + 1
+	answer := Answer{
+		QName:    labels[0],
+		Type:     binary.BigEndian.Uint16(data[idx : idx+2]),
+		Class:    binary.BigEndian.Uint16(data[idx+2 : idx+4]),
+		TTL:      binary.BigEndian.Uint32(data[idx+4 : idx+8]),
+		RdLength: binary.BigEndian.Uint16(data[idx+8 : idx+10]),
+		Rdata:    data[idx+10:],
+	}
+	return answer
+}
+
 func (r *DNSmessage) FromBytes(data []byte) error {
 	if len(data) < 12 {
 		return fmt.Errorf("header is too short")
@@ -199,7 +258,10 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 	r.ACount = binary.BigEndian.Uint16(data[6:8])
 	r.NSCount = binary.BigEndian.Uint16(data[8:10])
 	r.ARCount = binary.BigEndian.Uint16(data[10:12])
-	r.ParseQuestion(data, r.QDCount, 12)
+	idx := r.ParseQuestion(data, r.QDCount, 12)
+	if r.ACount > 0 {
+		parseAnswer(data, idx)
+	}
 	return nil
 }
 
@@ -209,6 +271,7 @@ func main() {
 	if len(os.Args) > 2 {
 		resolver = true
 		ip = os.Args[2]
+		fmt.Println("Setting resolve to true", ip)
 	}
 	_ = ip
 	_ = resolver
@@ -251,21 +314,55 @@ func main() {
 		resp := header.AnswerFrom()
 		if resolver {
 			// If resolver, we need to forward
-			remoteUdpAddr, _ := net.ResolveUDPAddr("udp", ip)
-			remoteUdpConn, _ := net.DialUDP("udp", nil, remoteUdpAddr)
-			if len(header.Questions) > 1 {
+			remoteUdpConn, _ := net.Dial("udp", ip)
+			if len(resp.Questions) > 1 {
 				// if more than 1 question, we need to split up
 				fmt.Println("There are more than 1 questions!")
+				fmt.Printf("%+v\n", resp.Questions)
+				for _, ques := range resp.Questions {
+					//iterate over questions
+					//turn question into its own separate DNS query
+					query := resp.AnswerFrom()
+					query.Questions = []Question{ques}
+					fmt.Printf("Iterating over %+v of %+v\n", query.Questions, resp.Questions)
+
+					//fire off query and get back response
+					size, err := remoteUdpConn.Write(query.ToBytes())
+					fmt.Println("Transmitted Query of N bytes ", size)
+					if err != nil {
+						fmt.Println("failed to write to DNS! ", err)
+					}
+					//parse response with ANSWER
+					buf := make([]byte, 512)
+					size, err = remoteUdpConn.Read(buf)
+					if err != nil {
+						fmt.Println("Error reading UDP stream IN ", err)
+					}
+					incoming := NewHeader()
+					if err := incoming.WithAnswer(buf[:size]); err != nil {
+						fmt.Println("Error parsing DNS ", err)
+					}
+					//append answer to resp.Answers
+					resp.Answers = append(resp.Answers, incoming.Answers...)
+				}
+				fmt.Printf("Got all responses cached %+v\n", resp.Answers)
+			} else {
+				remoteUdpConn.Write(buf[:size])
+				buf := make([]byte, 512)
+				size, _ := remoteUdpConn.Read(buf)
+				fmt.Println("Response from remote ", buf[:size])
+				incoming := NewHeader()
+				if err := incoming.WithAnswer(buf[:size]); err != nil {
+					fmt.Println("Error parsing DNS ", err)
+				}
+				//re-write the same packet but to the other connection
+				_, err = udpConn.WriteToUDP(incoming.ToBytes(), source)
+				if err != nil {
+					fmt.Println("Failed to send response:", err)
+				}
+
 			}
-			response := header.AnswerFrom()
-			remoteUdpConn.WriteToUDP(response.ToBytes(), remoteUdpAddr)
-			buf := make([]byte, 512)
-			size, _, _ := remoteUdpConn.ReadFromUDP(buf)
-			//re-write the same packet but to the other connection
-			_, err = udpConn.WriteToUDP(buf[:size], source)
-			if err != nil {
-				fmt.Println("Failed to send response:", err)
-			}
+			defer remoteUdpConn.Close()
 		} else {
 			_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
 			if err != nil {
