@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -223,7 +224,7 @@ func (r *DNSmessage) WithAnswer(data []byte) error {
 	answers := r.ParseQuestion(data, r.QDCount, 12)
 	fmt.Printf("Questions %+v \n", r.Questions)
 	fmt.Printf("Answers starting from %d %+v\n", answers, data[answers:])
-	r.Answers = append(r.Answers, parseAnswer(data, answers+1))
+	r.Answers = append(r.Answers, parseAnswer(data, answers))
 	fmt.Printf("Parsed answer: %+v\n", r.Answers)
 	return nil
 }
@@ -334,7 +335,7 @@ func main() {
 					}
 					//parse response with ANSWER
 					buf := make([]byte, 512)
-					size, err = remoteUdpConn.Read(buf)
+					size, err = bufio.NewReader(remoteUdpConn).Read(buf)
 					if err != nil {
 						fmt.Println("Error reading UDP stream IN ", err)
 					}
@@ -362,7 +363,6 @@ func main() {
 				}
 
 			}
-			defer remoteUdpConn.Close()
 		} else {
 			_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
 			if err != nil {
