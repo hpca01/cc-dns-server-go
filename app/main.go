@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -128,7 +127,7 @@ func (r *DNSmessage) ParseQuestion(data []byte, qcount int, offset int) int {
 	fmt.Printf("[ParseQuestion] - Incoming Data Bytes %+v\n", data)
 	labels := []string{}
 	var nextNullSegment int
-	for j := 0; j < qcount; j++ {
+	for j := 0; j < qcount && i < len(data); j++ {
 		nextNullSegment = bytes.Index(data[i:], []byte{0})
 		labels = append(labels, parseLabel(data[i:i+nextNullSegment+1], data))
 		fmt.Printf("[ParseQuestion] nextNullSegment=%d labels=%s i=%d qcount=%d\n",
@@ -257,11 +256,14 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 	r.QDCount = int(r.QCount)
 	fmt.Printf("QD count received %d \n", r.QDCount)
 	r.ACount = binary.BigEndian.Uint16(data[6:8])
+	fmt.Printf("ANS count received %d \n", r.ACount)
 	r.NSCount = binary.BigEndian.Uint16(data[8:10])
 	r.ARCount = binary.BigEndian.Uint16(data[10:12])
 	idx := r.ParseQuestion(data, r.QDCount, 12)
 	if r.ACount > 0 {
-		parseAnswer(data, idx)
+		fmt.Println("Trying to parse answers with idx ", idx)
+		fmt.Println("Trying to parse answers with data ", data)
+		r.Answers = append(r.Answers, parseAnswer(data, idx))
 	}
 	return nil
 }
@@ -269,10 +271,15 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 func main() {
 	resolver := false
 	var ip string
+	var resolverAddr *net.UDPAddr
 	if len(os.Args) > 2 {
 		resolver = true
 		ip = os.Args[2]
-		fmt.Println("Setting resolve to true", ip)
+		var err error
+		if resolverAddr, err = net.ResolveUDPAddr("udp", ip); err != nil {
+			panic("Failed to resolve ip ")
+		}
+		fmt.Println("[RESOLVER] = Setting resolver to true", ip)
 	}
 	_ = ip
 	_ = resolver
@@ -315,7 +322,6 @@ func main() {
 		resp := header.AnswerFrom()
 		if resolver {
 			// If resolver, we need to forward
-			remoteUdpConn, _ := net.Dial("udp", ip)
 			if len(resp.Questions) > 1 {
 				// if more than 1 question, we need to split up
 				fmt.Println("There are more than 1 questions!")
@@ -328,43 +334,42 @@ func main() {
 					fmt.Printf("Iterating over %+v of %+v\n", query.Questions, resp.Questions)
 
 					//fire off query and get back response
-					size, err := remoteUdpConn.Write(query.ToBytes())
+					size, err := udpConn.WriteToUDP(query.ToBytes(), resolverAddr)
 					fmt.Println("Transmitted Query of N bytes ", size)
 					if err != nil {
 						fmt.Println("failed to write to DNS! ", err)
 					}
-					//parse response with ANSWER
 					buf := make([]byte, 512)
-					size, err = bufio.NewReader(remoteUdpConn).Read(buf)
+					size, _, err = udpConn.ReadFromUDP(buf)
 					if err != nil {
-						fmt.Println("Error reading UDP stream IN ", err)
+						fmt.Println("Error on receiving ", err)
 					}
-					incoming := NewHeader()
-					if err := incoming.WithAnswer(buf[:size]); err != nil {
-						fmt.Println("Error parsing DNS ", err)
-					}
-					//append answer to resp.Answers
-					resp.Answers = append(resp.Answers, incoming.Answers...)
+					fmt.Printf("Recieved %d bytes back from %+v\n", size, resolverAddr.IP)
+					//parse response with ANSWER
 				}
-				fmt.Printf("Got all responses cached %+v\n", resp.Answers)
 			} else {
-				remoteUdpConn.Write(buf[:size])
+				header.Flags.QR = 0x0
+				size, err := udpConn.WriteToUDP(header.ToBytes(), resolverAddr)
+				if err != nil {
+					fmt.Println("Encountered error trying to send to resolver ", err)
+				}
+				fmt.Println("Written bytes count ", size)
 				buf := make([]byte, 512)
-				size, _ := remoteUdpConn.Read(buf)
+				size, _ = udpConn.Read(buf)
 				fmt.Println("Response from remote ", buf[:size])
 				incoming := NewHeader()
-				if err := incoming.WithAnswer(buf[:size]); err != nil {
+				if err := incoming.FromBytes(buf[:size]); err != nil {
 					fmt.Println("Error parsing DNS ", err)
 				}
 				//re-write the same packet but to the other connection
-				_, err = udpConn.WriteToUDP(incoming.ToBytes(), source)
+				_, err = udpConn.WriteToUDP(incoming.ToBytes(), udpAddr)
 				if err != nil {
 					fmt.Println("Failed to send response:", err)
 				}
 
 			}
 		} else {
-			_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
+			_, err = udpConn.WriteToUDP(resp.ToBytes(), udpAddr)
 			if err != nil {
 				fmt.Println("Failed to send response:", err)
 			}
