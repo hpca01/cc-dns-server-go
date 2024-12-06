@@ -112,11 +112,8 @@ func parseLabel(data []byte, allData []byte) string {
 			continue
 		}
 		len := int(data[idx])
-		fmt.Println("[parseLabel] - len=", len)
 		subStr := data[idx+1 : idx+1+len]
-		fmt.Println("[parseLabel] - subStr=", subStr)
 		labels = append(labels, string(subStr))
-		fmt.Println("[parseLabel] - labels=", labels)
 		idx += len + 1
 	}
 	return strings.Join(labels, ".")
@@ -124,16 +121,16 @@ func parseLabel(data []byte, allData []byte) string {
 
 func (r *DNSmessage) ParseQuestion(data []byte, qcount int, offset int) int {
 	var i = offset
-	fmt.Printf("[ParseQuestion] - Incoming Data Bytes %+v\n", data)
+	// fmt.Printf("[ParseQuestion] - Incoming Data Bytes %+v\n", data)
 	labels := []string{}
 	var nextNullSegment int
 	for j := 0; j < qcount && i < len(data); j++ {
 		nextNullSegment = bytes.Index(data[i:], []byte{0})
 		labels = append(labels, parseLabel(data[i:i+nextNullSegment+1], data))
-		fmt.Printf("[ParseQuestion] nextNullSegment=%d labels=%s i=%d qcount=%d\n",
-			nextNullSegment, labels, i, j)
-		fmt.Printf("[ParseQuestion] currentElement=%d nextElement=%d\n", data[i], data[i+1])
-		fmt.Printf("[ParseQuestion] nextNullSegElement+1=%d \n", data[i+nextNullSegment+1])
+		// fmt.Printf("[ParseQuestion] nextNullSegment=%d labels=%s i=%d qcount=%d\n",
+		// 	nextNullSegment, labels, i, j)
+		// fmt.Printf("[ParseQuestion] currentElement=%d nextElement=%d\n", data[i], data[i+1])
+		// fmt.Printf("[ParseQuestion] nextNullSegElement+1=%d \n", data[i+nextNullSegment+1])
 		i += nextNullSegment + 1
 		i += 4
 	}
@@ -168,9 +165,8 @@ func (r *DNSmessage) ToBytes() []byte {
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(len(r.Questions))) // ANCOUNT == same as QDCOUNT
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.NSCount))        // NSCOUNT
 	bytes = binary.BigEndian.AppendUint16(bytes, uint16(r.ARCount))        // ARCOUNT
-	fmt.Printf("%+v\n", r.Questions)
 	for _, question := range r.Questions {
-		fmt.Printf("Question: %+v\n", question)
+		// fmt.Printf("Question: %+v\n", question)
 		bytes = append(bytes, EncodeDomain(question.QName)...)
 		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QTYPE
 		bytes = binary.BigEndian.AppendUint16(bytes, uint16(1)) // QCLASS
@@ -178,7 +174,7 @@ func (r *DNSmessage) ToBytes() []byte {
 
 	for _, answer := range r.Answers {
 		//answer section
-		fmt.Printf("Answer for: %+v\n", answer.QName)
+		// fmt.Printf("Answer for: %+v\n", answer.QName)
 		bytes = append(bytes, EncodeDomain(answer.QName)...)
 		bytes = binary.BigEndian.AppendUint16(bytes, answer.Type)     // TYPE
 		bytes = binary.BigEndian.AppendUint16(bytes, answer.Class)    // CLASS
@@ -187,7 +183,7 @@ func (r *DNSmessage) ToBytes() []byte {
 		bytes = append(bytes, answer.Rdata...)                        // 8 8 8 8
 	}
 
-	fmt.Printf("Output bytes: %+v\n", bytes)
+	// fmt.Printf("Output bytes: %+v\n", bytes)
 	return bytes
 }
 
@@ -216,15 +212,15 @@ func (r *DNSmessage) WithAnswer(data []byte) error {
 	r.Flags = RawHeaderFlags(data[2:4]).parse()   // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits..
 	r.QCount = binary.BigEndian.Uint16(data[4:6]) // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
 	r.QDCount = int(r.QCount)
-	fmt.Printf("QD count received %d \n", r.QDCount)
+	// fmt.Printf("QD count received %d \n", r.QDCount)
 	r.ACount = binary.BigEndian.Uint16(data[6:8])
 	r.NSCount = binary.BigEndian.Uint16(data[8:10])
 	r.ARCount = binary.BigEndian.Uint16(data[10:12])
 	answers := r.ParseQuestion(data, r.QDCount, 12)
-	fmt.Printf("Questions %+v \n", r.Questions)
-	fmt.Printf("Answers starting from %d %+v\n", answers, data[answers:])
+	// fmt.Printf("Questions %+v \n", r.Questions)
+	// fmt.Printf("Answers starting from %d %+v\n", answers, data[answers:])
 	r.Answers = append(r.Answers, parseAnswer(data, answers))
-	fmt.Printf("Parsed answer: %+v\n", r.Answers)
+	// fmt.Printf("Parsed answer: %+v\n", r.Answers)
 	return nil
 }
 
@@ -254,15 +250,15 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 	r.Flags = RawHeaderFlags(data[2:4]).parse()   // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits..
 	r.QCount = binary.BigEndian.Uint16(data[4:6]) // we're shifting the first byte 8 to left and then ORing it with the second set of 8 bytes cast to 16 bits.
 	r.QDCount = int(r.QCount)
-	fmt.Printf("QD count received %d \n", r.QDCount)
+	// fmt.Printf("QD count received %d \n", r.QDCount)
 	r.ACount = binary.BigEndian.Uint16(data[6:8])
-	fmt.Printf("ANS count received %d \n", r.ACount)
+	// fmt.Printf("ANS count received %d \n", r.ACount)
 	r.NSCount = binary.BigEndian.Uint16(data[8:10])
 	r.ARCount = binary.BigEndian.Uint16(data[10:12])
 	idx := r.ParseQuestion(data, r.QDCount, 12)
 	if r.ACount > 0 {
-		fmt.Println("Trying to parse answers with idx ", idx)
-		fmt.Println("Trying to parse answers with data ", data)
+		// fmt.Println("Trying to parse answers with idx ", idx)
+		// fmt.Println("Trying to parse answers with data ", data)
 		r.Answers = append(r.Answers, parseAnswer(data, idx))
 	}
 	return nil
@@ -324,16 +320,17 @@ func main() {
 			// If resolver, we need to forward
 			if len(resp.Questions) > 1 {
 				// if more than 1 question, we need to split up
-				fmt.Println("There are more than 1 questions!")
-				fmt.Printf("%+v\n", resp.Questions)
+				// fmt.Println("There are more than 1 questions!")
+				// fmt.Printf("%+v\n", resp.Questions)
 				for _, ques := range resp.Questions {
 					//iterate over questions
 					//turn question into its own separate DNS query
 					query := resp.AnswerFrom()
 					query.Questions = []Question{ques}
-					fmt.Printf("Iterating over %+v of %+v\n", query.Questions, resp.Questions)
+					// fmt.Printf("Iterating over %+v of %+v\n", query.Questions, resp.Questions)
 
 					//fire off query and get back response
+					query.Flags.QR = 0x0
 					size, err := udpConn.WriteToUDP(query.ToBytes(), resolverAddr)
 					fmt.Println("Transmitted Query of N bytes ", size)
 					if err != nil {
@@ -346,6 +343,16 @@ func main() {
 					}
 					fmt.Printf("Recieved %d bytes back from %+v\n", size, resolverAddr.IP)
 					//parse response with ANSWER
+					incoming := NewHeader()
+					if err := incoming.FromBytes(buf[:size]); err != nil {
+						fmt.Println("Error parsing DNS ", err)
+					}
+					fmt.Println("Parsed response ", incoming)
+					resp.Answers = append(resp.Answers, incoming.Answers...)
+				}
+				_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
+				if err != nil {
+					fmt.Println("Failed to send response:", err)
 				}
 			} else {
 				header.Flags.QR = 0x0
@@ -362,7 +369,9 @@ func main() {
 					fmt.Println("Error parsing DNS ", err)
 				}
 				//re-write the same packet but to the other connection
-				_, err = udpConn.WriteToUDP(incoming.ToBytes(), udpAddr)
+				fmt.Println("Transmitting response ", incoming)
+				fmt.Println("Transmitting response bytes ", incoming.ToBytes())
+				_, err = udpConn.WriteToUDP(incoming.ToBytes(), source)
 				if err != nil {
 					fmt.Println("Failed to send response:", err)
 				}
