@@ -236,6 +236,82 @@ func (r *DNSmessage) FromBytes(data []byte) error {
 	return nil
 }
 
+type ConnDetails struct {
+	Resolver   *net.UDPAddr
+	SenderAddr *net.UDPAddr
+	Connection *net.UDPConn
+}
+
+func handleResponse(buf []byte, size int, conn *ConnDetails) {
+	header := NewHeader()
+	if err := header.FromBytes(buf[:size]); err != nil {
+		fmt.Println("Error parsing DNS ", err)
+		return
+	}
+	resp := header.Clone()
+	if conn.Resolver == nil {
+		_, err := conn.Connection.WriteToUDP(resp.ToBytes(), conn.SenderAddr)
+		if err != nil {
+			fmt.Println("Failed to send response:", err)
+		}
+	} else {
+		switch len(resp.Questions) {
+		case 1:
+			header.Flags.QR = 0x0
+			size, err := conn.Connection.WriteToUDP(header.ToBytes(), conn.Resolver)
+			if err != nil {
+				fmt.Println("Encountered error trying to send to resolver ", err)
+			}
+			fmt.Println("Written bytes count ", size)
+			buf := make([]byte, 512)
+			size, _ = conn.Connection.Read(buf)
+			fmt.Println("Response from remote ", buf[:size])
+			incoming := NewHeader()
+			if err := incoming.FromBytes(buf[:size]); err != nil {
+				fmt.Println("Error parsing DNS ", err)
+			}
+			//re-write the same packet but to the other connection
+			fmt.Println("Transmitting response ", incoming)
+			fmt.Println("Transmitting response bytes ", incoming.ToBytes())
+			_, err = conn.Connection.WriteToUDP(incoming.ToBytes(), conn.SenderAddr)
+			if err != nil {
+				fmt.Println("Failed to send response:", err)
+			}
+		default:
+			for _, ques := range resp.Questions {
+				//iterate over questions
+				//turn question into its own separate DNS query
+				query := resp.Clone()
+				query.Questions = []Question{ques}
+				//fire off query and get back response
+				query.Flags.QR = 0x0
+				size, err := conn.Connection.WriteToUDP(query.ToBytes(), conn.Resolver)
+				fmt.Println("Transmitted Query of N bytes ", size)
+				if err != nil {
+					fmt.Println("failed to write to DNS! ", err)
+				}
+				buf := make([]byte, 512)
+				size, _, err = conn.Connection.ReadFromUDP(buf)
+				if err != nil {
+					fmt.Println("Error on receiving ", err)
+				}
+				fmt.Printf("Recieved %d bytes back from %+v\n", size, conn.Resolver.IP)
+				//parse response with ANSWER
+				incoming := NewHeader()
+				if err := incoming.FromBytes(buf[:size]); err != nil {
+					fmt.Println("Error parsing DNS ", err)
+				}
+				fmt.Println("Parsed response ", incoming)
+				resp.Answers = append(resp.Answers, incoming.Answers...)
+			}
+			_, err := conn.Connection.WriteToUDP(resp.ToBytes(), conn.SenderAddr)
+			if err != nil {
+				fmt.Println("Failed to send response:", err)
+			}
+		}
+	}
+}
+
 func main() {
 	resolver := false
 	var ip string
@@ -281,74 +357,6 @@ func main() {
 		receivedData := string(buf[:size])
 		fmt.Printf("Received %d bytes from %s:[ %s ]\n", size, source, receivedData)
 
-		// Create an empty response
-		header := NewHeader()
-		if err := header.FromBytes(buf[:size]); err != nil {
-			fmt.Println("Error parsing DNS ", err)
-			continue
-		}
-		resp := header.Clone()
-		switch resolver {
-		case true:
-			switch len(resp.Questions) {
-			case 1:
-				header.Flags.QR = 0x0
-				size, err := udpConn.WriteToUDP(header.ToBytes(), resolverAddr)
-				if err != nil {
-					fmt.Println("Encountered error trying to send to resolver ", err)
-				}
-				fmt.Println("Written bytes count ", size)
-				buf := make([]byte, 512)
-				size, _ = udpConn.Read(buf)
-				fmt.Println("Response from remote ", buf[:size])
-				incoming := NewHeader()
-				if err := incoming.FromBytes(buf[:size]); err != nil {
-					fmt.Println("Error parsing DNS ", err)
-				}
-				//re-write the same packet but to the other connection
-				fmt.Println("Transmitting response ", incoming)
-				fmt.Println("Transmitting response bytes ", incoming.ToBytes())
-				_, err = udpConn.WriteToUDP(incoming.ToBytes(), source)
-				if err != nil {
-					fmt.Println("Failed to send response:", err)
-				}
-			default:
-				for _, ques := range resp.Questions {
-					//iterate over questions
-					//turn question into its own separate DNS query
-					query := resp.Clone()
-					query.Questions = []Question{ques}
-					//fire off query and get back response
-					query.Flags.QR = 0x0
-					size, err := udpConn.WriteToUDP(query.ToBytes(), resolverAddr)
-					fmt.Println("Transmitted Query of N bytes ", size)
-					if err != nil {
-						fmt.Println("failed to write to DNS! ", err)
-					}
-					buf := make([]byte, 512)
-					size, _, err = udpConn.ReadFromUDP(buf)
-					if err != nil {
-						fmt.Println("Error on receiving ", err)
-					}
-					fmt.Printf("Recieved %d bytes back from %+v\n", size, resolverAddr.IP)
-					//parse response with ANSWER
-					incoming := NewHeader()
-					if err := incoming.FromBytes(buf[:size]); err != nil {
-						fmt.Println("Error parsing DNS ", err)
-					}
-					fmt.Println("Parsed response ", incoming)
-					resp.Answers = append(resp.Answers, incoming.Answers...)
-				}
-				_, err = udpConn.WriteToUDP(resp.ToBytes(), source)
-				if err != nil {
-					fmt.Println("Failed to send response:", err)
-				}
-			}
-		default:
-			_, err = udpConn.WriteToUDP(resp.ToBytes(), udpAddr)
-			if err != nil {
-				fmt.Println("Failed to send response:", err)
-			}
-		}
+		handleResponse(buf, size, &ConnDetails{resolverAddr, source, udpConn})
 	}
 }
